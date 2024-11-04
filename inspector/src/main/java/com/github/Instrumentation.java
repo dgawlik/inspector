@@ -97,8 +97,6 @@ public class Instrumentation {
             return;
         }
 
-        visited.add(current);
-
         if(graph.containsKey(current)){
             for(var child : graph.get(current)){
                 instrumentRecurse(ctx, mappings, callback, graph, visited, current, child);
@@ -106,7 +104,7 @@ public class Instrumentation {
         }
 
         try {
-            beanFactory(ctx).autowireBean(ctx.getBean(current));
+
             var beanName = current;
             var methodNames = mappings.get(beanName);
 
@@ -115,15 +113,14 @@ public class Instrumentation {
 
                 beanFactory(ctx).removeBeanDefinition(beanName);
                 beanFactory(ctx).registerSingleton(beanName, bean);
-
-                if (parent != null) {
-                    beanFactory(ctx).autowireBean(beanFactory(ctx).getBean(parent));
-                }
+                beanFactory(ctx).autowireBean(ctx.getBean(current));
             }
 
         } catch (Exception e) {
             throw new RuntimeException(e);
         }
+
+        visited.add(current);
 
     }
 
@@ -135,25 +132,26 @@ public class Instrumentation {
             dependencyGraph.put(beanName, Arrays.asList(beanFactory(ctx).getDependenciesForBean(beanName)));
         }
 
-        for (var otherBean : beanFactory(ctx).getBeanDefinitionNames()) {
+        var allBeans = Arrays.asList(beanFactory(ctx).getBeanDefinitionNames());
+
+        for (var otherBean : allBeans) {
             var deps = Arrays.asList(beanFactory(ctx).getDependenciesForBean(otherBean));
             if (deps.stream().anyMatch(mappings::containsKey)) {
-                dependencyGraph.put(otherBean, deps.stream().filter(mappings::containsKey).toList());
+                var root = deps.stream().filter(mappings::containsKey).toList();
+                dependencyGraph.put(otherBean, root);
             }
         }
+
+        var roots = dependencyGraph.keySet().stream().filter(
+                k -> dependencyGraph.values().stream()
+                        .flatMap(List::stream).noneMatch(k::equals))
+                .toList();
 
 
         var visited = new HashSet<String>();
-        for (var key : dependencyGraph.keySet()) {
+        for (var key : roots) {
             instrumentRecurse(ctx, mappings, callback, dependencyGraph, visited, null, key);
         }
-
-        beanFactory(ctx).getBeanNamesIterator().forEachRemaining(otherBean -> {
-            if (!otherBean.equals("com.github.InspectorAutoconfigure$InspectorConfiguration")) {
-                var other = ctx.getBean(otherBean);
-                beanFactory(ctx).autowireBean(other);
-            }
-        });
     }
 
     private Object instrument(ApplicationContext ctx, Consumer<CallResult> callback, String beanName, List<String> methodNames) throws InstantiationException, IllegalAccessException, InvocationTargetException, NoSuchMethodException {
