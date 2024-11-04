@@ -17,15 +17,19 @@ import java.util.function.Consumer;
 
 public class Instrumentation {
 
-    public static class CallResult {
+    public static class Call {
         public Object result;
+        public Object[] args;
         public String targetName;
         public String methodName;
+        public Long timestamp;
 
-        public CallResult(Object result, String targetName, String methodName) {
+        public Call(Object result, Object[] args, String targetName, String methodName) {
             this.result = result;
+            this.args = args;
             this.targetName = targetName;
             this.methodName = methodName;
+            this.timestamp = System.currentTimeMillis();
         }
 
 
@@ -34,11 +38,11 @@ public class Instrumentation {
     public static class InvocationHandler implements java.lang.reflect.InvocationHandler {
         private Object target;
         private boolean done = false;
-        private Consumer<CallResult> callback;
+        private Consumer<Call> callback;
         private String beanName;
         private List<String> methodNames;
 
-        public InvocationHandler(Object bean, String beanName, List<String> methodNames, Consumer<CallResult> callback) {
+        public InvocationHandler(Object bean, String beanName, List<String> methodNames, Consumer<Call> callback) {
             this.target = bean;
             this.callback = callback;
             this.beanName = beanName;
@@ -52,7 +56,7 @@ public class Instrumentation {
 
             if (!done && methodNames.contains(method.getName())) {
                 done = true;
-                callback.accept(new CallResult(result, beanName, method.getName()));
+                callback.accept(new Call(result, args, beanName, method.getName()));
                 return result;
             }
             return result;
@@ -62,11 +66,11 @@ public class Instrumentation {
 
 
     public class Interceptor {
-        private Consumer<CallResult> callback;
+        private Consumer<Call> callback;
         private String beanName;
         private List<String> methodNames;
 
-        public Interceptor(String beanName, List<String> methodNames, Consumer<CallResult> callback) {
+        public Interceptor(String beanName, List<String> methodNames, Consumer<Call> callback) {
             this.callback = callback;
             this.beanName = beanName;
             this.methodNames = methodNames;
@@ -80,7 +84,7 @@ public class Instrumentation {
 
             var result = superMethod.invoke(self, args);
             if (methodNames.contains(method.getName())) {
-                callback.accept(new CallResult(result, beanName, method.getName()));
+                callback.accept(new Call(result, args, beanName, method.getName()));
             }
             return result;
         }
@@ -88,7 +92,7 @@ public class Instrumentation {
 
     public void instrumentRecurse(ApplicationContext ctx,
                                   Map<String, List<String>> mappings,
-                                  Consumer<CallResult> callback,
+                                  Consumer<Call> callback,
                                   Map<String, List<String>> graph,
                                   Set<String> visited,
                                   String parent,
@@ -124,7 +128,7 @@ public class Instrumentation {
 
     }
 
-    public void instrumentAll(ApplicationContext ctx, Map<String, List<String>> mappings, Consumer<CallResult> callback) {
+    public void instrumentAll(ApplicationContext ctx, Map<String, List<String>> mappings, Consumer<Call> callback) {
 
         Map<String, List<String>> dependencyGraph = new HashMap<>();
 
@@ -154,7 +158,7 @@ public class Instrumentation {
         }
     }
 
-    private Object instrument(ApplicationContext ctx, Consumer<CallResult> callback, String beanName, List<String> methodNames) throws InstantiationException, IllegalAccessException, InvocationTargetException, NoSuchMethodException {
+    private Object instrument(ApplicationContext ctx, Consumer<Call> callback, String beanName, List<String> methodNames) throws InstantiationException, IllegalAccessException, InvocationTargetException, NoSuchMethodException {
         Object bean = ctx.getBean(beanName);
 
         int modifiers = bean.getClass().getModifiers();

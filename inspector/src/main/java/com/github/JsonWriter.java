@@ -6,7 +6,7 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.function.Consumer;
 
-public class JsonWriter implements Consumer<Instrumentation.CallResult> {
+public class JsonWriter implements Consumer<Instrumentation.Call> {
 
     private String path;
 
@@ -15,12 +15,18 @@ public class JsonWriter implements Consumer<Instrumentation.CallResult> {
     }
 
     @Override
-    public void accept(Instrumentation.CallResult callResult) {
-        var result = callResult.result;
+    public void accept(Instrumentation.Call call) {
+        var result = call.result;
+        var args = call.args;
         var resultJson = new Gson().toJson(result);
+        var argsJson = new Gson().toJson(args);
 
         try {
-            Files.writeString(Path.of(path + "/" + callResult.targetName + "_" + callResult.methodName + ".json"), resultJson);
+            Files.writeString(Path.of(path + "/" + call.targetName
+                    + "_" + call.methodName + "_" + call.timestamp + ".json"), resultJson);
+            Files.writeString(Path.of(path + "/" + call.targetName
+                    + "_" + call.methodName + "_args_" + call.timestamp + ".json"), argsJson);
+
         } catch (Exception e) {
             e.printStackTrace();
         }
