@@ -1,19 +1,20 @@
 package com.github;
 
 import net.bytebuddy.ByteBuddy;
+import net.bytebuddy.dynamic.DynamicType;
 import net.bytebuddy.implementation.MethodDelegation;
 import net.bytebuddy.implementation.bind.annotation.*;
 import net.bytebuddy.matcher.ElementMatchers;
+import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.beans.factory.config.ConstructorArgumentValues;
 import org.springframework.beans.factory.support.DefaultListableBeanFactory;
 import org.springframework.context.ApplicationContext;
 import org.springframework.context.ConfigurableApplicationContext;
 
-import java.lang.reflect.InvocationTargetException;
-import java.lang.reflect.Method;
-import java.lang.reflect.Modifier;
-import java.lang.reflect.Proxy;
+import java.lang.reflect.*;
 import java.util.*;
 import java.util.function.Consumer;
+import java.util.stream.Collectors;
 
 public class Instrumentation {
 
@@ -96,13 +97,13 @@ public class Instrumentation {
                                   Map<String, List<String>> graph,
                                   Set<String> visited,
                                   String parent,
-                                  String current){
-        if(visited.contains(current)){
+                                  String current) {
+        if (visited.contains(current)) {
             return;
         }
 
-        if(graph.containsKey(current)){
-            for(var child : graph.get(current)){
+        if (graph.containsKey(current)) {
+            for (var child : graph.get(current)) {
                 instrumentRecurse(ctx, mappings, callback, graph, visited, current, child);
             }
         }
@@ -112,7 +113,7 @@ public class Instrumentation {
             var beanName = current;
             var methodNames = mappings.get(beanName);
 
-            if(methodNames != null) {
+            if (methodNames != null) {
                 var bean = instrument(ctx, callback, beanName, methodNames);
 
                 beanFactory(ctx).removeBeanDefinition(beanName);
@@ -147,9 +148,49 @@ public class Instrumentation {
         }
 
         var roots = dependencyGraph.keySet().stream().filter(
-                k -> dependencyGraph.values().stream()
-                        .flatMap(List::stream).noneMatch(k::equals))
+                        k -> dependencyGraph.values().stream()
+                                .flatMap(List::stream).noneMatch(k::equals))
                 .toList();
+
+
+        class Dep {
+            public String name;
+            public List<String> deps;
+
+            public Dep(String name, List<String> deps) {
+                this.name = name;
+                this.deps = deps;
+            }
+        }
+
+        var dependant = roots
+                .stream()
+                .map(r -> new Dep(r, Arrays.stream(beanFactory(ctx).getDependentBeans(r)).toList()))
+                .collect(Collectors.toMap(d -> d.name, d -> d.deps));
+
+        while (dependant.values().stream().anyMatch(l -> !l.isEmpty())) {
+
+
+            for (var dependency : dependant.keySet()) {
+                if (dependency.isEmpty()) {
+                    continue;
+                }
+
+                for (String dep : dependant.get(dependency)) {
+                    if (dependencyGraph.containsKey(dep)) {
+                        dependencyGraph.get(dep).add(dependency);
+                    } else {
+                        dependencyGraph.put(dep, new ArrayList<>(List.of(dependency)));
+                    }
+                }
+            }
+
+            roots = dependencyGraph.keySet().stream().filter(
+                            k -> dependencyGraph.values().stream()
+                                    .flatMap(List::stream).noneMatch(k::equals))
+                    .toList();
+
+        }
 
 
         var visited = new HashSet<String>();
@@ -171,19 +212,40 @@ public class Instrumentation {
                     new InvocationHandler(bean, beanName, methodNames, callback)
             );
         } else if (!isFinal) {
-            bean = new ByteBuddy()
+            var beanClass = new ByteBuddy()
                     .subclass(ctx.getType(beanName))
                     .method(ElementMatchers.any()).intercept(MethodDelegation.to(new Interceptor(beanName, methodNames, callback)))
                     .make()
                     .load(this.getClass().getClassLoader())
-                    .getLoaded()
-                    .getDeclaredConstructor()
-                    .newInstance();
+                    .getLoaded();
+
+            var ctors = beanClass.getConstructors();
+
+            if (ctors.length == 1) {
+                bean = ctors[0].newInstance(getConstructorArgs(ctx, ctors[0]));
+            } else {
+                var autowiredCtor = Arrays.stream(ctors).filter(c -> c.isAnnotationPresent(Autowired.class)).findFirst();
+                if (autowiredCtor.isPresent()) {
+                    bean = autowiredCtor.get().newInstance(getConstructorArgs(ctx, autowiredCtor.get()));
+                } else {
+                    throw new RuntimeException("No constructors suitable for autowiring");
+                }
+            }
 
         } else {
             throw new RuntimeException("Cannot instrument final class");
         }
         return bean;
+    }
+
+    private Object[] getConstructorArgs(ApplicationContext ctx, Constructor<?> ctor) {
+        var args = new Object[ctor.getParameterCount()];
+        for (int i = 0; i < ctor.getParameterCount(); i++) {
+            var paramType = ctor.getParameterTypes()[i];
+            var paramBean = ctx.getBean(paramType);
+            args[i] = paramBean;
+        }
+        return args;
     }
 
     private DefaultListableBeanFactory beanFactory(ApplicationContext ctx) {
