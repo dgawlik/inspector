@@ -1,64 +1,103 @@
 package com.github;
 
 import com.google.gson.Gson;
-import net.bytebuddy.ByteBuddy;
-import net.bytebuddy.implementation.MethodDelegation;
-import net.bytebuddy.implementation.bind.annotation.*;
-import net.bytebuddy.matcher.ElementMatchers;
-import org.springframework.beans.BeansException;
-import org.springframework.beans.factory.support.DefaultListableBeanFactory;
+import com.google.gson.stream.JsonWriter;
+import org.aopalliance.aop.Advice;
+import org.aopalliance.intercept.MethodInterceptor;
+import org.aopalliance.intercept.MethodInvocation;
+import org.springframework.aop.Pointcut;
+import org.springframework.aop.PointcutAdvisor;
+import org.springframework.aop.framework.autoproxy.DefaultAdvisorAutoProxyCreator;
+import org.springframework.aop.support.ComposablePointcut;
+import org.springframework.aop.support.DefaultPointcutAdvisor;
+import org.springframework.aop.support.NameMatchMethodPointcut;
+import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.beans.factory.config.BeanPostProcessor;
 import org.springframework.boot.autoconfigure.AutoConfiguration;
-import org.springframework.context.ApplicationContext;
-import org.springframework.context.ApplicationContextAware;
-import org.springframework.context.ConfigurableApplicationContext;
+import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
+import org.springframework.boot.autoconfigure.transaction.TransactionAutoConfiguration;
+import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
-import org.springframework.core.Ordered;
-import org.springframework.core.env.ConfigurableEnvironment;
-import org.springframework.core.env.EnumerablePropertySource;
 import org.springframework.core.env.Environment;
-import org.springframework.core.env.PropertySource;
-import sun.misc.Unsafe;
 
-import java.lang.reflect.Field;
-import java.lang.reflect.Method;
-import java.lang.reflect.Modifier;
-import java.lang.reflect.Proxy;
+import java.io.FileWriter;
 import java.nio.file.Files;
 import java.nio.file.Path;
-import java.util.Arrays;
-import java.util.HashMap;
-import java.util.List;
-import java.util.Map;
 
-import static net.bytebuddy.matcher.ElementMatchers.isDeclaredBy;
-
-@AutoConfiguration
+@AutoConfiguration(before = TransactionAutoConfiguration.class)
+@ConditionalOnProperty(prefix = "inspector", name = "enabled", havingValue = "true")
 public class InspectorAutoconfigure {
 
+    public static class MyMethodInterceptor implements MethodInterceptor {
 
-    @Configuration
-    public static class InspectorConfiguration implements ApplicationContextAware, Ordered {
+        private String directory;
 
-        @Override
-        public void setApplicationContext(ApplicationContext applicationContext) throws BeansException {
-
-            var env = applicationContext.getEnvironment();
-
-            var availableMappings = new ConfigReader(env).extractMappings();
-            var dirPath = new ConfigReader(env).getDirectory();
-
-            var instrumentation = new Instrumentation();
-
-            instrumentation.instrumentAll(applicationContext, availableMappings, new JsonWriter(dirPath));
+        public MyMethodInterceptor(String directory) {
+            this.directory = directory;
         }
 
-
         @Override
-        public int getOrder() {
-            return Ordered.LOWEST_PRECEDENCE;
-        }
+        public Object invoke(MethodInvocation invocation) throws Throwable {
+            var className = invocation.getMethod().getDeclaringClass().getSimpleName();
+            var methodName = invocation.getMethod().getName();
+            var timestamp = System.currentTimeMillis();
 
+            Files.writeString(Path.of(directory + "/" + className + "_" + methodName + "_" + timestamp + "_args.json"), new Gson().toJson(invocation.getArguments()));
+
+            Object result = invocation.proceed();
+
+            Files.writeString(Path.of(directory + "/" + className + "_" + methodName + "_" + timestamp + "_result.json"), new Gson().toJson(result));
+
+            return result;
+        }
     }
 
 
+    @Configuration
+    public static class InspectorPostProcessor {
+
+        @Autowired
+        private Environment env;
+
+
+        @Bean
+        public PointcutAdvisor pointcutAdvisor() {
+            ComposablePointcut composed = null;
+
+            var config = new ConfigReader(env);
+            var mappings = config.extractMappings();
+
+            for (var key : mappings.keySet()) {
+                var pointcut = new NameMatchMethodPointcut();
+                pointcut.setMappedNames(mappings.get(key).toArray(new String[0]));
+                pointcut.setClassFilter(clazz -> assignable(clazz, key));
+                if (composed == null) {
+                    composed = new ComposablePointcut((Pointcut) pointcut);
+                } else {
+                    composed = composed.union((Pointcut) pointcut);
+                }
+            }
+
+            Advice advice = new MyMethodInterceptor(config.getDirectory());
+            return new DefaultPointcutAdvisor(composed, advice);
+        }
+
+        private boolean assignable(Class<?> clazz, String name) {
+            if (clazz.getSimpleName().equals(name)) {
+                return true;
+            } else {
+                for (var i : clazz.getInterfaces()) {
+                    if (assignable(i, name)) {
+                        return true;
+                    }
+                }
+
+               if (clazz.getSuperclass() != null && assignable(clazz.getSuperclass(), name)) {
+                   return true;
+               }
+
+               return false;
+            }
+        }
+    }
 }

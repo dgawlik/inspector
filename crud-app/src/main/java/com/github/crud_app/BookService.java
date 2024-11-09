@@ -1,10 +1,13 @@
 package com.github.crud_app;
 
+import jakarta.transaction.Transactional;
 import org.springframework.stereotype.Service;
 import org.springframework.web.bind.annotation.*;
 
 import java.util.List;
 
+@Service
+@Transactional
 public class BookService {
     private final BookRepository bookRepository;
 
